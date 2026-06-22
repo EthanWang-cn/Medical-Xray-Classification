@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-鲁棒性增强模块
-包含多种提升模型鲁棒性的技术实现
+Robustness Enhancement Module
+Contains implementations of various techniques to improve model robustness
 """
-
 from .deep_ensemble import DeepEnsemble
 from .tta import TestTimeAugmentation
 from .uncertainty import UncertaintyEstimator

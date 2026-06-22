@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-测试时增强 (Test-Time Augmentation, TTA)
-在推理阶段对输入图像进行多种变换，然后集成预测结果
-提升模型对图像变化的鲁棒性
+Test-Time Augmentation (TTA)
+Apply multiple transformations to input images during inference, then ensemble prediction results
+Improve model robustness to image variations
 """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,26 +15,26 @@ from typing import List, Dict, Optional, Callable
 
 class TestTimeAugmentation:
     """
-    测试时增强类
+    Test-Time Augmentation Class
     
-    实现原理：
-    1. 对同一张测试图像应用多种不同的增强变换
-    2. 对每个变换后的图像分别进行预测
-    3. 将所有预测结果进行平均或投票
+    Implementation Principle:
+    1. Apply various augmentation transformations to the same test image
+    2. Make predictions for each transformed image separately
+    3. Average or vote on all prediction results
     
-    优势：
-    - 提升预测准确性（通常 0.5-2%）
-    - 增强对图像平移、旋转、缩放的鲁棒性
-    - 无需重新训练模型
+    Advantages:
+    - Improves prediction accuracy (typically 0.5-2%)
+    - Enhances robustness to image translation, rotation, and scaling
+    - No need to retrain the model
     """
     
     def __init__(self, model: nn.Module, image_size: int = 224, 
                  device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """
         Args:
-            model: 分类模型
-            image_size: 图像尺寸
-            device: 计算设备
+            model: Classification model
+            image_size: Image size
+            device: Computing device
         """
         self.model = model
         self.image_size = image_size
@@ -43,23 +42,23 @@ class TestTimeAugmentation:
         self.model = self.model.to(device)
         self.model.eval()
         
-        # 定义 TTA 变换管线
+        # Define TTA transformation pipeline
         self.transforms = self._build_tta_transforms()
     
     def _build_tta_transforms(self) -> List[Callable]:
         """
-        构建 TTA 变换列表
+        Build TTA transformation list
         
-        包含多种常见的测试时增强策略：
-        - 原图
-        - 水平翻转
-        - 垂直翻转
-        - 多尺度裁剪
-        - 颜色微调
+        Includes various common test-time augmentation strategies:
+        - Original image
+        - Horizontal flip
+        - Vertical flip
+        - Multi-scale cropping
+        - Color fine-tuning
         """
         transforms_list = []
         
-        # 1. 原始图像（中心裁剪）
+        # 1. Original image (center crop)
         transforms_list.append(
             A.Compose([
                 A.Resize(self.image_size + 32, self.image_size + 32),
@@ -69,7 +68,7 @@ class TestTimeAugmentation:
             ])
         )
         
-        # 2. 水平翻转
+        # 2. Horizontal flip
         transforms_list.append(
             A.Compose([
                 A.Resize(self.image_size + 32, self.image_size + 32),
@@ -80,7 +79,7 @@ class TestTimeAugmentation:
             ])
         )
         
-        # 3. 垂直翻转
+        # 3. Vertical flip
         transforms_list.append(
             A.Compose([
                 A.Resize(self.image_size + 32, self.image_size + 32),
@@ -91,7 +90,7 @@ class TestTimeAugmentation:
             ])
         )
         
-        # 4. 左上裁剪
+        # 4. Top-left crop
         transforms_list.append(
             A.Compose([
                 A.Resize(self.image_size + 32, self.image_size + 32),
@@ -101,7 +100,7 @@ class TestTimeAugmentation:
             ])
         )
         
-        # 5. 右下裁剪
+        # 5. Bottom-right crop
         transforms_list.append(
             A.Compose([
                 A.Resize(self.image_size + 32, self.image_size + 32),
@@ -111,7 +110,7 @@ class TestTimeAugmentation:
             ])
         )
         
-        # 6. 轻微旋转 + 中心裁剪
+        # 6. Slight rotation + center crop
         transforms_list.append(
             A.Compose([
                 A.Resize(self.image_size + 32, self.image_size + 32),
@@ -126,57 +125,57 @@ class TestTimeAugmentation:
     
     def add_custom_transform(self, transform: Callable):
         """
-        添加自定义 TTA 变换
+        Add custom TTA transformation
         
         Args:
-            transform: albumentations 变换组合
+            transform: Albumentations transformation composition
         """
         self.transforms.append(transform)
-        print(f"添加自定义变换，当前共 {len(self.transforms)} 种变换")
+        print(f"Added custom transform, currently {len(self.transforms)} transforms total")
     
     def predict(self, images: List[np.ndarray], weights: Optional[List[float]] = None) -> Dict:
         """
-        TTA 预测
+        TTA prediction
         
         Args:
-            images: 输入图像列表（numpy 数组，HWC 格式，RGB）
-            weights: 各变换的权重，None 表示等权重
+            images: List of input images (numpy arrays, HWC format, RGB)
+            weights: Weights for each transform, None means equal weights
             
         Returns:
-            dict: TTA 集成预测结果
+            dict: TTA ensemble prediction results
         """
         if weights is not None and len(weights) != len(self.transforms):
-            raise ValueError(f"权重数量 ({len(weights)}) 与变换数量 ({len(self.transforms)}) 不匹配")
+            raise ValueError(f"Number of weights ({len(weights)}) does not match number of transforms ({len(self.transforms)})")
         
         all_probs = []
         
         with torch.no_grad():
             for i, transform in enumerate(self.transforms):
-                # 应用变换
+                # Apply transformation
                 augmented_batch = []
                 for img in images:
                     augmented = transform(image=img)['image']
                     augmented_batch.append(augmented)
                 
-                # 堆叠成 batch
+                # Stack into batch
                 batch = torch.stack(augmented_batch).to(self.device)
                 
-                # 预测
+                # Predict
                 logits = self.model(batch)
                 probs = torch.sigmoid(logits)
                 all_probs.append(probs)
         
-        # 堆叠 [n_transforms, B, num_classes]
+        # Stack [n_transforms, B, num_classes]
         probs_stack = torch.stack(all_probs, dim=0)
         
-        # 计算集成预测
+        # Calculate ensemble prediction
         if weights is not None:
             weights_tensor = torch.tensor(weights, device=self.device).view(-1, 1, 1)
             mean_probs = (probs_stack * weights_tensor).sum(dim=0)
         else:
             mean_probs = probs_stack.mean(dim=0)
         
-        # 计算不确定性（变换间的方差）
+        # Calculate uncertainty (variance between transforms)
         std_probs = probs_stack.std(dim=0)
         
         return {
@@ -188,29 +187,29 @@ class TestTimeAugmentation:
     
     def predict_single(self, image: np.ndarray, weights: Optional[List[float]] = None) -> Dict:
         """
-        单张图像的 TTA 预测
+        TTA prediction for single image
         
         Args:
-            image: 输入图像（numpy 数组，HWC 格式，RGB）
-            weights: 各变换的权重
+            image: Input image (numpy array, HWC format, RGB)
+            weights: Weights for each transform
             
         Returns:
-            dict: TTA 预测结果
+            dict: TTA prediction results
         """
         return self.predict([image], weights)
 
 
 class LightTTA:
     """
-    轻量级 TTA（仅水平翻转）
-    适合对速度要求较高的场景
+    Lightweight TTA (horizontal flip only)
+    Suitable for scenarios with high speed requirements
     """
     
     def __init__(self, model: nn.Module, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """
         Args:
-            model: 分类模型
-            device: 计算设备
+            model: Classification model
+            device: Computing device
         """
         self.model = model
         self.device = device
@@ -219,27 +218,27 @@ class LightTTA:
     
     def predict(self, x: torch.Tensor) -> Dict:
         """
-        轻量级 TTA 预测（仅水平翻转）
+        Lightweight TTA prediction (horizontal flip only)
         
         Args:
-            x: 输入图像张量 [B, C, H, W]
+            x: Input image tensor [B, C, H, W]
             
         Returns:
-            dict: TTA 预测结果
+            dict: TTA prediction results
         """
         x = x.to(self.device)
         
         with torch.no_grad():
-            # 原图预测
+            # Original image prediction
             logits1 = self.model(x)
             probs1 = torch.sigmoid(logits1)
             
-            # 水平翻转预测
-            x_flip = torch.flip(x, dims=[3])  # 水平翻转
+            # Horizontal flip prediction
+            x_flip = torch.flip(x, dims=[3])  # Horizontal flip
             logits2 = self.model(x_flip)
             probs2 = torch.sigmoid(logits2)
         
-        # 平均
+        # Average
         mean_probs = (probs1 + probs2) / 2.0
         
         return {

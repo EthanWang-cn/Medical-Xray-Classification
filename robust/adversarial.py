@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-对抗攻击与鲁棒性测试模块
-实现多种对抗攻击方法和噪声扰动，用于测试模型的鲁棒性
+Adversarial Attack and Robustness Testing Module
+Implements various adversarial attack methods and noise perturbations to test model robustness
 """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,17 +12,17 @@ from typing import Dict, List, Optional, Tuple
 
 class AdversarialTester:
     """
-    对抗鲁棒性测试器
+    Adversarial Robustness Tester
     
-    实现多种对抗攻击方法，评估模型在扰动下的性能
-    帮助发现模型的脆弱点，指导鲁棒性改进
+    Implements various adversarial attack methods to evaluate model performance under perturbations
+    Helps identify model vulnerabilities and guides robustness improvements
     """
     
     def __init__(self, model: nn.Module, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """
         Args:
-            model: 分类模型
-            device: 计算设备
+            model: Classification model
+            device: Computing device
         """
         self.model = model
         self.device = device
@@ -33,39 +32,39 @@ class AdversarialTester:
     def fgsm_attack(self, x: torch.Tensor, y: torch.Tensor, 
                     epsilon: float = 0.03) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        FGSM (Fast Gradient Sign Method) 对抗攻击
+        FGSM (Fast Gradient Sign Method) Adversarial Attack
         
-        快速生成对抗样本的经典方法
-        沿着损失梯度的符号方向添加扰动
+        A classic method for quickly generating adversarial examples
+        Adds perturbation along the sign direction of the loss gradient
         
         Args:
-            x: 输入图像 [B, C, H, W]
-            y: 真实标签 [B, num_classes]
-            epsilon: 扰动强度（越大攻击越强）
+            x: Input image [B, C, H, W]
+            y: True labels [B, num_classes]
+            epsilon: Perturbation strength (larger = stronger attack)
             
         Returns:
-            tuple: (对抗样本, 扰动)
+            tuple: (adversarial example, perturbation)
         """
         x = x.to(self.device)
         y = y.to(self.device).float()
         
-        # 启用梯度
+        # Enable gradients
         x_adv = x.clone().detach().requires_grad_(True)
         
-        # 前向传播
+        # Forward pass
         logits = self.model(x_adv)
         loss = F.binary_cross_entropy_with_logits(logits, y)
         
-        # 反向传播
+        # Backward pass
         self.model.zero_grad()
         loss.backward()
         
-        # 生成对抗样本
+        # Generate adversarial example
         grad_sign = x_adv.grad.data.sign()
         perturbation = epsilon * grad_sign
         x_adv = x + perturbation
         
-        # 裁剪到有效范围
+        # Clip to valid range
         x_adv = torch.clamp(x_adv, 0, 1)
         
         return x_adv.detach(), perturbation.detach()
@@ -74,28 +73,28 @@ class AdversarialTester:
                    epsilon: float = 0.03, alpha: float = 0.01,
                    steps: int = 10, random_start: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        PGD (Projected Gradient Descent) 对抗攻击
+        PGD (Projected Gradient Descent) Adversarial Attack
         
-        迭代式的对抗攻击，比 FGSM 更强
-        是评估模型鲁棒性的标准方法
+        Iterative adversarial attack, stronger than FGSM
+        Standard method for evaluating model robustness
         
         Args:
-            x: 输入图像 [B, C, H, W]
-            y: 真实标签 [B, num_classes]
-            epsilon: 最大扰动范围
-            alpha: 每步的步长
-            steps: 迭代步数
-            random_start: 是否随机初始化
+            x: Input image [B, C, H, W]
+            y: True labels [B, num_classes]
+            epsilon: Maximum perturbation range
+            alpha: Step size per iteration
+            steps: Number of iterations
+            random_start: Whether to use random initialization
             
         Returns:
-            tuple: (对抗样本, 扰动)
+            tuple: (adversarial example, perturbation)
         """
         x = x.to(self.device)
         y = y.to(self.device).float()
         
         x_adv = x.clone().detach()
         
-        # 随机初始化
+        # Random initialization
         if random_start:
             x_adv = x_adv + torch.empty_like(x_adv).uniform_(-epsilon, epsilon)
             x_adv = torch.clamp(x_adv, 0, 1)
@@ -103,19 +102,19 @@ class AdversarialTester:
         for _ in range(steps):
             x_adv.requires_grad_(True)
             
-            # 前向传播
+            # Forward pass
             logits = self.model(x_adv)
             loss = F.binary_cross_entropy_with_logits(logits, y)
             
-            # 反向传播
+            # Backward pass
             self.model.zero_grad()
             loss.backward()
             
-            # 更新对抗样本
+            # Update adversarial example
             grad_sign = x_adv.grad.data.sign()
             x_adv = x_adv.detach() + alpha * grad_sign
             
-            # 投影到 epsilon 球内
+            # Project back into epsilon ball
             perturbation = torch.clamp(x_adv - x, -epsilon, epsilon)
             x_adv = torch.clamp(x + perturbation, 0, 1)
         
@@ -123,16 +122,16 @@ class AdversarialTester:
     
     def gaussian_noise(self, x: torch.Tensor, std: float = 0.1) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        高斯噪声扰动
+        Gaussian Noise Perturbation
         
-        添加高斯噪声，测试模型对随机噪声的鲁棒性
+        Add Gaussian noise to test model robustness against random noise
         
         Args:
-            x: 输入图像 [B, C, H, W]
-            std: 噪声标准差
+            x: Input image [B, C, H, W]
+            std: Noise standard deviation
             
         Returns:
-            tuple: (带噪声图像, 噪声)
+            tuple: (noisy image, noise)
         """
         x = x.to(self.device)
         
@@ -145,36 +144,36 @@ class AdversarialTester:
     def salt_pepper_noise(self, x: torch.Tensor, amount: float = 0.05,
                           salt_vs_pepper: float = 0.5) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        椒盐噪声扰动
+        Salt-and-Pepper Noise Perturbation
         
-        模拟图像中的像素损坏
+        Simulate pixel corruption in images
         
         Args:
-            x: 输入图像 [B, C, H, W]
-            amount: 噪声像素比例
-            salt_vs_pepper: 盐噪声 vs 椒噪声比例
+            x: Input image [B, C, H, W]
+            amount: Proportion of noisy pixels
+            salt_vs_pepper: Ratio of salt noise vs pepper noise
             
         Returns:
-            tuple: (带噪声图像, 噪声掩码)
+            tuple: (noisy image, noise mask)
         """
         x = x.to(self.device)
         
         x_noisy = x.clone()
         batch_size, channels, height, width = x.shape
         
-        # 生成噪声掩码
+        # Generate noise mask
         n_noisy = int(amount * height * width)
         
         for i in range(batch_size):
             for c in range(channels):
-                # 盐噪声（白色像素）
+                # Salt noise (white pixels)
                 n_salt = int(n_noisy * salt_vs_pepper)
                 coords = torch.randint(0, height * width, (n_salt,), device=self.device)
                 h_coords = coords // width
                 w_coords = coords % width
                 x_noisy[i, c, h_coords, w_coords] = 1.0
                 
-                # 椒噪声（黑色像素）
+                # Pepper noise (black pixels)
                 n_pepper = n_noisy - n_salt
                 coords = torch.randint(0, height * width, (n_pepper,), device=self.device)
                 h_coords = coords // width
@@ -188,26 +187,26 @@ class AdversarialTester:
     def evaluate_robustness(self, x: torch.Tensor, y: torch.Tensor,
                            attack_type: str = 'fgsm', **kwargs) -> Dict:
         """
-        评估模型在特定攻击下的鲁棒性
+        Evaluate model robustness under specific attack
         
         Args:
-            x: 输入图像
-            y: 真实标签
-            attack_type: 攻击类型 ('fgsm', 'pgd', 'gaussian', 'salt_pepper')
-            **kwargs: 攻击参数
+            x: Input image
+            y: True labels
+            attack_type: Attack type ('fgsm', 'pgd', 'gaussian', 'salt_pepper')
+            **kwargs: Attack parameters
             
         Returns:
-            dict: 鲁棒性评估结果
+            dict: Robustness evaluation results
         """
         x = x.to(self.device)
         y = y.to(self.device).float()
         
-        # 原始预测
+        # Clean prediction
         with torch.no_grad():
             logits_clean = self.model(x)
             probs_clean = torch.sigmoid(logits_clean)
         
-        # 生成对抗/扰动样本
+        # Generate adversarial/perturbed examples
         if attack_type == 'fgsm':
             x_adv, perturbation = self.fgsm_attack(x, y, **kwargs)
         elif attack_type == 'pgd':
@@ -217,25 +216,25 @@ class AdversarialTester:
         elif attack_type == 'salt_pepper':
             x_adv, perturbation = self.salt_pepper_noise(x, **kwargs)
         else:
-            raise ValueError(f"不支持的攻击类型: {attack_type}")
+            raise ValueError(f"Unsupported attack type: {attack_type}")
         
-        # 对抗样本预测
+        # Adversarial prediction
         with torch.no_grad():
             logits_adv = self.model(x_adv)
             probs_adv = torch.sigmoid(logits_adv)
         
-        # 计算性能下降
-        # 使用阈值 0.5 计算准确率
+        # Calculate performance drop
+        # Use threshold 0.5 to calculate accuracy
         preds_clean = (probs_clean > 0.5).float()
         preds_adv = (probs_adv > 0.5).float()
         
         acc_clean = (preds_clean == y).float().mean().item()
         acc_adv = (preds_adv == y).float().mean().item()
         
-        # 计算预测变化
+        # Calculate prediction changes
         prediction_change = (preds_clean != preds_adv).float().mean().item()
         
-        # 计算概率变化
+        # Calculate probability changes
         prob_diff = (probs_clean - probs_adv).abs().mean().item()
         
         return {
@@ -253,20 +252,20 @@ class AdversarialTester:
     
     def robustness_benchmark(self, x: torch.Tensor, y: torch.Tensor) -> Dict:
         """
-        运行完整的鲁棒性基准测试
+        Run complete robustness benchmark
         
-        测试多种攻击和噪声下的模型性能
+        Test model performance under various attacks and noise types
         
         Args:
-            x: 输入图像
-            y: 真实标签
+            x: Input image
+            y: True labels
             
         Returns:
-            dict: 完整的鲁棒性测试报告
+            dict: Complete robustness test report
         """
         results = {}
         
-        # 1. FGSM 攻击
+        # 1. FGSM attack
         results['fgsm_eps0.01'] = self.evaluate_robustness(
             x, y, attack_type='fgsm', epsilon=0.01
         )
@@ -274,12 +273,12 @@ class AdversarialTester:
             x, y, attack_type='fgsm', epsilon=0.03
         )
         
-        # 2. PGD 攻击
+        # 2. PGD attack
         results['pgd_eps0.03'] = self.evaluate_robustness(
             x, y, attack_type='pgd', epsilon=0.03, steps=10
         )
         
-        # 3. 高斯噪声
+        # 3. Gaussian noise
         results['gaussian_std0.05'] = self.evaluate_robustness(
             x, y, attack_type='gaussian', std=0.05
         )
@@ -287,12 +286,12 @@ class AdversarialTester:
             x, y, attack_type='gaussian', std=0.1
         )
         
-        # 4. 椒盐噪声
+        # 4. Salt-and-pepper noise
         results['salt_pepper_0.05'] = self.evaluate_robustness(
             x, y, attack_type='salt_pepper', amount=0.05
         )
         
-        # 生成摘要
+        # Generate summary
         summary = {
             'clean_accuracy': results['fgsm_eps0.01']['accuracy_clean'],
             'robustness_scores': {}

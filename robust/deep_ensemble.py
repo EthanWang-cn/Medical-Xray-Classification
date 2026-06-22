@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-深度集成学习 (Deep Ensembles)
-通过多个独立训练的模型进行投票，提升预测准确性和鲁棒性
-同时提供基于模型分歧的不确定性估计
+Deep Ensembles
+Improve prediction accuracy and robustness by voting across multiple independently trained models
+Also provides uncertainty estimation based on inter-model disagreement
 """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,51 +14,51 @@ from typing import List, Dict, Optional
 
 class DeepEnsemble:
     """
-    深度集成学习类
+    Deep Ensemble Learning Class
     
-    实现原理：
-    1. 训练多个具有不同初始化或不同数据增强的模型
-    2. 推理时对所有模型的预测进行平均或加权
-    3. 通过模型间的分歧程度估计不确定性
+    Implementation Principle:
+    1. Train multiple models with different initializations or data augmentations
+    2. Average or weight predictions from all models during inference
+    3. Estimate uncertainty through degree of disagreement between models
     
-    优势：
-    - 显著提升分类准确率
-    - 提供可靠的不确定性估计
-    - 对噪声和扰动更鲁棒
+    Advantages:
+    - Significantly improves classification accuracy
+    - Provides reliable uncertainty estimates
+    - More robust to noise and perturbations
     """
     
     def __init__(self, model_fn, num_models=5, device='cuda' if torch.cuda.is_available() else 'cpu'):
         """
         Args:
-            model_fn: 模型创建函数，调用后返回一个新的模型实例
-            num_models: 集成模型数量
-            device: 计算设备
+            model_fn: Model creation function, returns a new model instance when called
+            num_models: Number of ensemble models
+            device: Computing device
         """
         self.model_fn = model_fn
         self.num_models = num_models
         self.device = device
         
-        # 模型列表
+        # Model list
         self.models: List[nn.Module] = []
         
-        # 模型权重（用于加权集成）
+        # Model weights (for weighted ensemble)
         self.weights: Optional[List[float]] = None
     
     def create_models(self):
-        """创建所有集成模型（不同初始化）"""
+        """Create all ensemble models (different initializations)"""
         self.models = []
         for i in range(self.num_models):
             model = self.model_fn()
             model = model.to(self.device)
             self.models.append(model)
-        print(f"创建了 {self.num_models} 个集成模型")
+        print(f"Created {self.num_models} ensemble models")
     
     def load_models(self, checkpoint_paths: List[str]):
         """
-        从检查点加载模型
+        Load models from checkpoints
         
         Args:
-            checkpoint_paths: 模型权重文件路径列表
+            checkpoint_paths: List of model weight file paths
         """
         self.models = []
         for path in checkpoint_paths:
@@ -71,40 +70,40 @@ class DeepEnsemble:
             self.models.append(model)
         
         self.num_models = len(self.models)
-        print(f"成功加载 {self.num_models} 个集成模型")
+        print(f"Successfully loaded {self.num_models} ensemble models")
     
     def set_weights(self, weights: List[float]):
         """
-        设置各模型的权重（用于加权平均）
+        Set weights for each model (for weighted averaging)
         
         Args:
-            weights: 权重列表，长度应等于模型数量
+            weights: List of weights, length should equal number of models
         """
         if len(weights) != self.num_models:
-            raise ValueError(f"权重数量 ({len(weights)}) 与模型数量 ({self.num_models}) 不匹配")
+            raise ValueError(f"Number of weights ({len(weights)}) does not match number of models ({self.num_models})")
         
-        # 归一化权重
+        # Normalize weights
         total = sum(weights)
         self.weights = [w / total for w in weights]
-        print(f"设置模型权重: {self.weights}")
+        print(f"Set model weights: {self.weights}")
     
     def predict(self, x: torch.Tensor, return_all: bool = False) -> Dict:
         """
-        集成预测
+        Ensemble prediction
         
         Args:
-            x: 输入图像 [B, C, H, W]
-            return_all: 是否返回所有模型的单独预测
+            x: Input image [B, C, H, W]
+            return_all: Whether to return individual predictions from all models
             
         Returns:
-            dict: 包含集成预测结果和不确定性信息
+            dict: Contains ensemble prediction results and uncertainty information
         """
         if not self.models:
-            raise RuntimeError("模型未加载！请先调用 create_models() 或 load_models()")
+            raise RuntimeError("Models not loaded! Please call create_models() or load_models() first")
         
         x = x.to(self.device)
         
-        # 收集所有模型的预测
+        # Collect predictions from all models
         all_probs = []
         all_logits = []
         
@@ -116,25 +115,25 @@ class DeepEnsemble:
                 all_logits.append(logits)
                 all_probs.append(probs)
         
-        # 堆叠 [num_models, B, num_classes]
+        # Stack [num_models, B, num_classes]
         probs_stack = torch.stack(all_probs, dim=0)
         logits_stack = torch.stack(all_logits, dim=0)
         
-        # 计算集成预测
+        # Calculate ensemble prediction
         if self.weights is not None:
-            # 加权平均
+            # Weighted average
             weights_tensor = torch.tensor(self.weights, device=self.device).view(-1, 1, 1)
             mean_probs = (probs_stack * weights_tensor).sum(dim=0)
             mean_logits = (logits_stack * weights_tensor).sum(dim=0)
         else:
-            # 简单平均
+            # Simple average
             mean_probs = probs_stack.mean(dim=0)
             mean_logits = logits_stack.mean(dim=0)
         
-        # 计算不确定性指标
-        std_probs = probs_stack.std(dim=0)  # 标准差（模型间分歧）
+        # Calculate uncertainty metrics
+        std_probs = probs_stack.std(dim=0)  # Standard deviation (inter-model disagreement)
         
-        # 计算预测熵
+        # Calculate predictive entropy
         eps = 1e-7
         entropy = - (mean_probs * torch.log(mean_probs + eps) + 
                     (1 - mean_probs) * torch.log(1 - mean_probs + eps))
@@ -156,14 +155,14 @@ class DeepEnsemble:
     
     def get_uncertainty_levels(self, x: torch.Tensor, thresholds: Optional[List[float]] = None) -> Dict:
         """
-        获取预测的不确定性等级
+        Get prediction uncertainty levels
         
         Args:
-            x: 输入图像
-            thresholds: 不确定性阈值，默认 [0.1, 0.2, 0.3]
+            x: Input image
+            thresholds: Uncertainty thresholds, default [0.1, 0.2, 0.3]
             
         Returns:
-            dict: 每个样本的不确定性等级
+            dict: Uncertainty level for each sample
         """
         if thresholds is None:
             thresholds = [0.1, 0.2, 0.3]
@@ -171,10 +170,10 @@ class DeepEnsemble:
         result = self.predict(x)
         std_probs = result['std_probs']
         
-        # 计算每个样本的平均不确定性
+        # Calculate average uncertainty for each sample
         sample_uncertainty = std_probs.mean(dim=1)  # [B]
         
-        # 分级
+        # Classification
         levels = []
         for unc in sample_uncertainty:
             unc_val = unc.item()
@@ -193,11 +192,11 @@ class DeepEnsemble:
     
     def save_models(self, save_dir: str, prefix: str = 'ensemble_model'):
         """
-        保存所有模型权重
+        Save all model weights
         
         Args:
-            save_dir: 保存目录
-            prefix: 文件名前缀
+            save_dir: Save directory
+            prefix: Filename prefix
         """
         save_path = Path(save_dir)
         save_path.mkdir(parents=True, exist_ok=True)
@@ -206,4 +205,4 @@ class DeepEnsemble:
             path = save_path / f"{prefix}_{i}.pth"
             torch.save(model.state_dict(), path)
         
-        print(f"已保存 {self.num_models} 个模型到 {save_dir}")
+        print(f"Saved {self.num_models} models to {save_dir}")

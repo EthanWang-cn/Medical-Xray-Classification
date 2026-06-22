@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-不确定性估计模块
-实现多种不确定性估计方法：
-1. 蒙特卡洛 Dropout (MC Dropout)
-2. 深度集成不确定性
-3. 贝叶斯神经网络近似
-4. 温度缩放校准
+Uncertainty Estimation Module
+Implements various uncertainty estimation methods:
+1. Monte Carlo Dropout (MC Dropout)
+2. Deep Ensemble Uncertainty
+3. Bayesian Neural Network Approximation
+4. Temperature Scaling Calibration
 """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,17 +16,17 @@ from typing import Dict, List, Optional, Tuple
 
 class UncertaintyEstimator:
     """
-    不确定性估计器
+    Uncertainty Estimator
     
-    提供多种不确定性估计方法，帮助评估模型预测的可信度
-    在医学影像等关键应用中，不确定性估计至关重要
+    Provides various uncertainty estimation methods to help evaluate model prediction confidence
+    Critical in key applications such as medical imaging
     """
     
     def __init__(self, model: nn.Module, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """
         Args:
-            model: 分类模型
-            device: 计算设备
+            model: Classification model
+            device: Computing device
         """
         self.model = model
         self.device = device
@@ -36,22 +35,22 @@ class UncertaintyEstimator:
     def mc_dropout(self, x: torch.Tensor, n_samples: int = 30, 
                    dropout_rate: Optional[float] = None) -> Dict:
         """
-        蒙特卡洛 Dropout 不确定性估计
+        Monte Carlo Dropout Uncertainty Estimation
         
-        通过在推理时保持 Dropout 开启，进行多次前向传播，
-        利用预测的方差来估计认知不确定性 (epistemic uncertainty)
+        Estimate epistemic uncertainty using prediction variance
+        by keeping Dropout enabled during inference and performing multiple forward passes
         
         Args:
-            x: 输入图像 [B, C, H, W]
-            n_samples: 采样次数（越多越准确，但越慢）
-            dropout_rate: 如果指定，临时修改 Dropout 比率
+            x: Input image [B, C, H, W]
+            n_samples: Number of samples (more is more accurate but slower)
+            dropout_rate: If specified, temporarily modify Dropout rate
             
         Returns:
-            dict: 包含均值、方差、熵等不确定性指标
+            dict: Contains mean, variance, entropy and other uncertainty metrics
         """
         x = x.to(self.device)
         
-        # 保存原始 Dropout 状态
+        # Save original Dropout state
         original_dropout_states = []
         if dropout_rate is not None:
             for module in self.model.modules():
@@ -59,10 +58,10 @@ class UncertaintyEstimator:
                     original_dropout_states.append(module.p)
                     module.p = dropout_rate
         
-        # 保持训练模式以启用 Dropout
+        # Keep training mode to enable Dropout
         self.model.train()
         
-        # 收集多次前向传播的结果
+        # Collect results from multiple forward passes
         probs_list = []
         logits_list = []
         
@@ -73,10 +72,10 @@ class UncertaintyEstimator:
                 probs_list.append(probs)
                 logits_list.append(logits)
         
-        # 恢复评估模式
+        # Switch back to evaluation mode
         self.model.eval()
         
-        # 恢复原始 Dropout 比率
+        # Restore original Dropout rate
         if dropout_rate is not None:
             idx = 0
             for module in self.model.modules():
@@ -84,21 +83,21 @@ class UncertaintyEstimator:
                     module.p = original_dropout_states[idx]
                     idx += 1
         
-        # 堆叠结果 [n_samples, B, num_classes]
+        # Stack results [n_samples, B, num_classes]
         probs_stack = torch.stack(probs_list, dim=0)
         logits_stack = torch.stack(logits_list, dim=0)
         
-        # 计算统计量
+        # Calculate statistics
         mean_probs = probs_stack.mean(dim=0)
         std_probs = probs_stack.std(dim=0)
         var_probs = probs_stack.var(dim=0)
         
-        # 计算预测熵
+        # Calculate predictive entropy
         eps = 1e-7
         entropy = - (mean_probs * torch.log(mean_probs + eps) + 
                     (1 - mean_probs) * torch.log(1 - mean_probs + eps))
         
-        # 计算变异系数 (Coefficient of Variation)
+        # Calculate Coefficient of Variation
         cv_probs = std_probs / (mean_probs + eps)
         
         return {
@@ -115,24 +114,24 @@ class UncertaintyEstimator:
     def temperature_scaling(self, val_loader, n_classes: int, 
                            max_iter: int = 100, lr: float = 0.01) -> float:
         """
-        温度缩放校准
+        Temperature Scaling Calibration
         
-        学习一个温度参数 T，使预测概率更好地校准
-        解决模型过度自信或过度不自信的问题
+        Learn a temperature parameter T to better calibrate prediction probabilities
+        Solve the problem of model being overconfident or underconfident
         
         Args:
-            val_loader: 验证集数据加载器
-            n_classes: 类别数
-            max_iter: 最大迭代次数
-            lr: 学习率
+            val_loader: Validation set data loader
+            n_classes: Number of classes
+            max_iter: Maximum number of iterations
+            lr: Learning rate
             
         Returns:
-            float: 最优温度参数
+            float: Optimal temperature parameter
         """
-        # 初始化温度参数
+        # Initialize temperature parameter
         temperature = nn.Parameter(torch.ones(1).to(self.device))
         
-        # 收集验证集 logits 和 labels
+        # Collect validation set logits and labels
         all_logits = []
         all_labels = []
         
@@ -148,7 +147,7 @@ class UncertaintyEstimator:
         all_logits = torch.cat(all_logits, dim=0)
         all_labels = torch.cat(all_labels, dim=0)
         
-        # 优化温度参数
+        # Optimize temperature parameter
         optimizer = torch.optim.LBFGS([temperature], lr=lr, max_iter=max_iter)
         criterion = nn.BCEWithLogitsLoss()
         
@@ -162,19 +161,19 @@ class UncertaintyEstimator:
         optimizer.step(eval)
         
         optimal_temp = temperature.item()
-        print(f"温度缩放校准完成，最优温度: {optimal_temp:.4f}")
+        print(f"Temperature scaling calibration complete, optimal temperature: {optimal_temp:.4f}")
         
         return optimal_temp
     
     def get_uncertainty_summary(self, uncertainty_dict: Dict) -> Dict:
         """
-        从不确定性结果中提取摘要统计
+        Extract summary statistics from uncertainty results
         
         Args:
-            uncertainty_dict: mc_dropout 的返回结果
+            uncertainty_dict: Return result from mc_dropout
             
         Returns:
-            dict: 不确定性摘要
+            dict: Uncertainty summary
         """
         std = uncertainty_dict['std_probs']
         entropy = uncertainty_dict['entropy']
@@ -192,18 +191,18 @@ class UncertaintyEstimator:
                             low_threshold: float = 0.1,
                             high_threshold: float = 0.2) -> List[str]:
         """
-        将不确定性分级（低/中/高）
+        Classify uncertainty levels (low/medium/high)
         
         Args:
-            uncertainty_dict: 不确定性估计结果
-            low_threshold: 低不确定性阈值
-            high_threshold: 高不确定性阈值
+            uncertainty_dict: Uncertainty estimation results
+            low_threshold: Low uncertainty threshold
+            high_threshold: High uncertainty threshold
             
         Returns:
-            list: 每个样本的不确定性等级
+            list: Uncertainty level for each sample
         """
         std = uncertainty_dict['std_probs']
-        sample_uncertainty = std.mean(dim=1)  # 每个样本的平均不确定性
+        sample_uncertainty = std.mean(dim=1)  # Average uncertainty per sample
         
         levels = []
         for unc in sample_uncertainty:
@@ -220,17 +219,17 @@ class UncertaintyEstimator:
 
 class AleatoricEstimator:
     """
-    任意不确定性 (Aleatoric Uncertainty) 估计器
+    Aleatoric Uncertainty Estimator
     
-    估计数据本身固有的不确定性（如噪声、模糊性）
-    通过学习预测的方差来实现
+    Estimate uncertainty inherent in the data itself (e.g., noise, ambiguity)
+    Implemented by learning the variance of predictions
     """
     
     def __init__(self, model: nn.Module, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """
         Args:
-            model: 输出 logits 和 log_variance 的模型
-            device: 计算设备
+            model: Model that outputs logits and log_variance
+            device: Computing device
         """
         self.model = model
         self.device = device
@@ -238,13 +237,13 @@ class AleatoricEstimator:
     
     def estimate(self, x: torch.Tensor) -> Dict:
         """
-        估计任意不确定性
+        Estimate aleatoric uncertainty
         
         Args:
-            x: 输入图像 [B, C, H, W]
+            x: Input image [B, C, H, W]
             
         Returns:
-            dict: 包含均值预测和不确定性
+            dict: Contains mean prediction and uncertainty
         """
         x = x.to(self.device)
         
@@ -252,12 +251,12 @@ class AleatoricEstimator:
         with torch.no_grad():
             output = self.model(x)
             
-            # 假设模型输出 (mean, log_var)
+            # Assume model outputs (mean, log_var)
             if isinstance(output, tuple):
                 mean, log_var = output
             else:
-                # 如果模型只输出一个值，无法估计任意不确定性
-                raise ValueError("模型需要输出均值和对数方差")
+                # If model only outputs one value, aleatoric uncertainty cannot be estimated
+                raise ValueError("Model needs to output both mean and log variance")
         
         var = torch.exp(log_var)
         std = torch.sqrt(var)
@@ -274,29 +273,29 @@ class AleatoricEstimator:
 def expected_calibration_error(probs: torch.Tensor, labels: torch.Tensor, 
                                n_bins: int = 10) -> float:
     """
-    计算期望校准误差 (ECE)
+    Calculate Expected Calibration Error (ECE)
     
-    衡量模型预测概率的校准程度
-    ECE 越低，模型的概率估计越可靠
+    Measure the calibration degree of model prediction probabilities
+    Lower ECE means more reliable probability estimates
     
     Args:
-        probs: 预测概率 [N, num_classes]
-        labels: 真实标签 [N, num_classes]
-        n_bins: 分箱数量
+        probs: Prediction probabilities [N, num_classes]
+        labels: True labels [N, num_classes]
+        n_bins: Number of bins
         
     Returns:
-        float: ECE 值
+        float: ECE value
     """
-    # 对于多标签分类，展平所有类别
+    # For multi-label classification, flatten all classes
     probs_flat = probs.flatten()
     labels_flat = labels.flatten()
     
-    # 按概率分箱
+    # Bin by probability
     bin_boundaries = torch.linspace(0, 1, n_bins + 1)
     ece = 0.0
     
     for i in range(n_bins):
-        # 找到当前 bin 的样本
+        # Find samples in current bin
         bin_lower = bin_boundaries[i]
         bin_upper = bin_boundaries[i + 1]
         
@@ -304,7 +303,7 @@ def expected_calibration_error(probs: torch.Tensor, labels: torch.Tensor,
         prop_in_bin = in_bin.float().mean()
         
         if prop_in_bin.item() > 0:
-            # 计算 bin 内的平均准确率和平均置信度
+            # Calculate average accuracy and average confidence within the bin
             avg_confidence = probs_flat[in_bin].mean()
             avg_accuracy = labels_flat[in_bin].float().mean()
             
