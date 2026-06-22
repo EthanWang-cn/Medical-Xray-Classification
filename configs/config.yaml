@@ -1,0 +1,96 @@
+# 医学影像鲁棒性分类项目配置文件
+
+# 数据集配置
+dataset:
+  name: "chestmnist"  # 数据集名称: chestmnist, dermamnist, pneumoniamnist
+  image_size: 224     # 图像尺寸
+  in_channels: 1      # 输入通道数 (1: 灰度, 3: RGB)
+  download: true      # 是否自动下载
+  data_dir: "./data"  # 数据目录
+
+# 模型配置
+model:
+  backbone: "resnet50"      # 骨干网络: resnet50, densenet121, efficientnet_b0
+  pretrained: true          # 是否使用预训练权重
+  dropout_rate: 0.3         # Dropout 比率
+  n_ensembles: 5            # 集成模型数量
+
+# 训练配置
+training:
+  batch_size: 32
+  epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"         # 优化器: adam, sgd
+  scheduler: "cosine"       # 学习率调度: cosine, step, plateau
+  early_stopping_patience: 10
+  gradient_clip: 1.0        # 梯度裁剪阈值
+  
+  # 数据增强
+  augmentation:
+    horizontal_flip_prob: 0.5
+    vertical_flip_prob: 0.1
+    rotation_range: 15
+    brightness_range: [0.8, 1.2]
+    contrast_range: [0.8, 1.2]
+    gaussian_noise_prob: 0.3
+
+# 鲁棒性配置
+robustness:
+  # 深度集成
+  deep_ensemble:
+    enabled: true
+    n_models: 5
+    weighted: false
+  
+  # 测试时增强
+  tta:
+    enabled: true
+    n_transforms: 6
+  
+  # 不确定性估计
+  uncertainty:
+    method: "mc_dropout"    # mc_dropout, ensemble
+    n_samples: 30           # MC Dropout 采样次数
+  
+  # 对抗训练
+  adversarial_training:
+    enabled: false
+    method: "pgd"
+    epsilon: 0.03
+    alpha: 0.01
+    steps: 10
+
+# 评估配置
+evaluation:
+  batch_size: 64
+  threshold: 0.5            # 分类阈值
+  metrics: ["auc", "f1", "accuracy", "precision", "recall"]
+  
+  # 鲁棒性测试
+  robustness_test:
+    enabled: true
+    attacks:
+      - name: "fgsm"
+        epsilon: 0.01
+      - name: "fgsm"
+        epsilon: 0.03
+      - name: "pgd"
+        epsilon: 0.03
+        steps: 10
+      - name: "gaussian"
+        std: 0.05
+      - name: "gaussian"
+        std: 0.1
+
+# 路径配置
+paths:
+  checkpoint_dir: "./checkpoints"
+  log_dir: "./logs"
+  result_dir: "./results"
+  figure_dir: "./results/figures"
+
+# 其他
+seed: 42
+device: "cuda"  # cuda 或 cpu
+num_workers: 4

@@ -1,0 +1,439 @@
+# -*- coding: utf-8 -*-
+"""
+评估脚本
+支持标准评估、鲁棒性测试、不确定性分析等
+"""
+
+import os
+import sys
+import argparse
+import yaml
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+import medmnist
+from medmnist import INFO
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from tqdm import tqdm
+from pathlib import Path
+import json
+
+# 添加项目根目录到路径
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from models.backbone import get_backbone
+from robust.tta import LightTTA
+from robust.uncertainty import UncertaintyEstimator
+from robust.adversarial import AdversarialTester
+from utils.metrics import calculate_metrics
+from utils.visualization import (
+    plot_roc_curves,
+    plot_uncertainty_distribution,
+    plot_robustness_comparison
+)
+
+
+def get_test_transform(image_size: int) -> A.Compose:
+    """获取测试时的变换"""
+    return A.Compose([
+        A.Resize(image_size, image_size),
+        A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ToTensorV2(),
+    ])
+
+
+class MedMNISTDataset(torch.utils.data.Dataset):
+    """MedMNIST 数据集包装类"""
+    
+    def __init__(self, dataset, transform=None):
+        self.dataset = dataset
+        self.transform = transform
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        img, label = self.dataset[idx]
+        img = np.array(img)
+        
+        # 确保 3 通道
+        if len(img.shape) == 2:
+            img = np.stack([img] * 3, axis=-1)
+        elif img.shape[-1] == 1:
+            img = np.repeat(img, 3, axis=-1)
+        
+        if self.transform:
+            augmented = self.transform(image=img)
+            img = augmented['image']
+        
+        label = torch.FloatTensor(label).squeeze()
+        return img, label
+
+
+def standard_evaluation(model, test_loader, device, class_names):
+    """标准评估"""
+    model.eval()
+    all_labels = []
+    all_probs = []
+    
+    with torch.no_grad():
+        for images, labels in tqdm(test_loader, desc='标准评估'):
+            images = images.to(device)
+            logits = model(images)
+            probs = torch.sigmoid(logits)
+            
+            all_labels.append(labels.numpy())
+            all_probs.append(probs.cpu().numpy())
+    
+    all_labels = np.concatenate(all_labels, axis=0)
+    all_probs = np.concatenate(all_probs, axis=0)
+    all_preds = (all_probs > 0.5).astype(int)
+    
+    metrics = calculate_metrics(all_labels, all_preds, all_probs, class_names)
+    
+    return metrics, all_labels, all_probs
+
+
+def tta_evaluation(model, test_loader, device, class_names):
+    """TTA 评估"""
+    tta = LightTTA(model, device)
+    
+    all_labels = []
+    all_probs = []
+    
+    with torch.no_grad():
+        for images, labels in tqdm(test_loader, desc='TTA 评估'):
+            images = images.to(device)
+            result = tta.predict(images)
+            
+            all_labels.append(labels.numpy())
+            all_probs.append(result['probs'].cpu().numpy())
+    
+    all_labels = np.concatenate(all_labels, axis=0)
+    all_probs = np.concatenate(all_probs, axis=0)
+    all_preds = (all_probs > 0.5).astype(int)
+    
+    metrics = calculate_metrics(all_labels, all_preds, all_probs, class_names)
+    
+    return metrics, all_labels, all_probs
+
+
+def uncertainty_analysis(model, test_loader, device, n_samples=30):
+    """不确定性分析"""
+    estimator = UncertaintyEstimator(model, device)
+    
+    all_uncertainty = []
+    
+    # 只取一部分样本进行不确定性分析（节省时间）
+    max_samples = 500
+    count = 0
+    
+    for images, labels in tqdm(test_loader, desc='不确定性分析'):
+        if count >= max_samples:
+            break
+        
+        images = images.to(device)
+        result = estimator.mc_dropout(images, n_samples=n_samples)
+        
+        # 每个样本的平均不确定性
+        sample_unc = result['std_probs'].mean(dim=1).cpu().numpy()
+        all_uncertainty.append(sample_unc)
+        
+        count += len(images)
+    
+    all_uncertainty = np.concatenate(all_uncertainty, axis=0)
+    
+    return {
+        'mean': float(np.mean(all_uncertainty)),
+        'std': float(np.std(all_uncertainty)),
+        'median': float(np.median(all_uncertainty)),
+        'values': all_uncertainty
+    }
+
+
+def robustness_test(model, test_loader, device):
+    """鲁棒性测试"""
+    tester = AdversarialTester(model, device)
+    
+    # 取一个 batch 的数据进行测试
+    images, labels = next(iter(test_loader))
+    images = images.to(device)
+    labels = labels.to(device)
+    
+    results = {}
+    
+    # FGSM 攻击
+    for eps in [0.01, 0.03, 0.05]:
+        result = tester.evaluate_robustness(
+            images, labels, attack_type='fgsm', epsilon=eps
+        )
+        results[f'FGSM (ε={eps})'] = {
+            'accuracy_clean': result['accuracy_clean'],
+            'accuracy_adversarial': result['accuracy_adversarial'],
+            'accuracy_drop': result['accuracy_drop'],
+            'prediction_change_rate': result['prediction_change_rate']
+        }
+    
+    # PGD 攻击
+    result = tester.evaluate_robustness(
+        images, labels, attack_type='pgd', epsilon=0.03, steps=10
+    )
+    results['PGD (ε=0.03)'] = {
+        'accuracy_clean': result['accuracy_clean'],
+        'accuracy_adversarial': result['accuracy_adversarial'],
+        'accuracy_drop': result['accuracy_drop'],
+        'prediction_change_rate': result['prediction_change_rate']
+    }
+    
+    # 高斯噪声
+    for std in [0.05, 0.1]:
+        result = tester.evaluate_robustness(
+            images, labels, attack_type='gaussian', std=std
+        )
+        results[f'Gaussian Noise (σ={std})'] = {
+            'accuracy_clean': result['accuracy_clean'],
+            'accuracy_adversarial': result['accuracy_adversarial'],
+            'accuracy_drop': result['accuracy_drop'],
+            'prediction_change_rate': result['prediction_change_rate']
+        }
+    
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(description='医学影像鲁棒性分类评估')
+    parser.add_argument('--config', type=str, default='configs/config.yaml',
+                        help='配置文件路径')
+    parser.add_argument('--checkpoint', type=str, required=True,
+                        help='模型检查点路径')
+    parser.add_argument('--dataset', type=str, default=None,
+                        help='数据集名称 (覆盖配置文件)')
+    parser.add_argument('--output_dir', type=str, default='./results',
+                        help='结果输出目录')
+    parser.add_argument('--tta', action='store_true',
+                        help='是否使用 TTA')
+    parser.add_argument('--uncertainty', action='store_true',
+                        help='是否进行不确定性分析')
+    parser.add_argument('--robustness', action='store_true',
+                        help='是否进行鲁棒性测试')
+    
+    args = parser.parse_args()
+    
+    # 加载配置
+    with open(args.config, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    
+    if args.dataset:
+        config['dataset']['name'] = args.dataset
+    
+    # 设备
+    device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
+    print(f"使用设备: {device}")
+    
+    # 创建输出目录
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figure_dir = output_dir / 'figures'
+    figure_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 获取数据集信息
+    dataset_name = config['dataset']['name']
+    info = INFO[dataset_name]
+    n_classes = len(info['label'])
+    class_names = list(info['label'].values())
+    
+    print(f"数据集: {dataset_name}")
+    print(f"类别数: {n_classes}")
+    
+    # 加载数据集
+    image_size = config['dataset']['image_size']
+    test_transform = get_test_transform(image_size)
+    
+    DataClass = getattr(medmnist, info['python_class'])
+    test_dataset = DataClass(
+        split='test',
+        transform=None,
+        download=True,
+        size=image_size,
+        root=config['dataset']['data_dir']
+    )
+    test_dataset = MedMNISTDataset(test_dataset, test_transform)
+    
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=config['evaluation']['batch_size'],
+        shuffle=False,
+        num_workers=config['num_workers'],
+        pin_memory=True
+    )
+    
+    print(f"测试集大小: {len(test_dataset)}")
+    
+    # 加载模型
+    model = get_backbone(
+        model_name=config['model']['backbone'],
+        num_classes=n_classes,
+        pretrained=False,
+        dropout_rate=config['model']['dropout_rate'],
+        in_channels=3
+    )
+    
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+    model.load_state_dict(checkpoint)
+    model = model.to(device)
+    model.eval()
+    
+    print(f"模型已加载: {args.checkpoint}")
+    
+    # 结果字典
+    all_results = {}
+    
+    # 1. 标准评估
+    print("\n" + "=" * 60)
+    print("1. 标准评估")
+    print("=" * 60)
+    
+    std_metrics, std_labels, std_probs = standard_evaluation(
+        model, test_loader, device, class_names
+    )
+    
+    print(f"\n标准评估结果:")
+    print(f"  平均 AUC: {std_metrics['overall']['mean_auc']:.4f}")
+    print(f"  平均 F1:  {std_metrics['overall']['mean_f1']:.4f}")
+    print(f"  精确匹配率: {std_metrics['overall']['exact_match_ratio']:.4f}")
+    print(f"  汉明损失: {std_metrics['overall']['hamming_loss']:.4f}")
+    
+    all_results['standard'] = {
+        'mean_auc': std_metrics['overall']['mean_auc'],
+        'mean_f1': std_metrics['overall']['mean_f1'],
+        'exact_match_ratio': std_metrics['overall']['exact_match_ratio'],
+        'hamming_loss': std_metrics['overall']['hamming_loss'],
+        'per_class': {
+            name: {
+                'auc': m['auc'],
+                'f1': m['f1'],
+                'precision': m['precision'],
+                'recall': m['recall']
+            }
+            for name, m in std_metrics['per_class'].items()
+        }
+    }
+    
+    # 绘制 ROC 曲线
+    plot_roc_curves(
+        std_labels, std_probs, class_names,
+        save_path=str(figure_dir / 'roc_curves.png')
+    )
+    
+    # 2. TTA 评估
+    if args.tta:
+        print("\n" + "=" * 60)
+        print("2. TTA 评估")
+        print("=" * 60)
+        
+        tta_metrics, tta_labels, tta_probs = tta_evaluation(
+            model, test_loader, device, class_names
+        )
+        
+        print(f"\nTTA 评估结果:")
+        print(f"  平均 AUC: {tta_metrics['overall']['mean_auc']:.4f}")
+        print(f"  平均 F1:  {tta_metrics['overall']['mean_f1']:.4f}")
+        
+        # 对比
+        auc_improvement = tta_metrics['overall']['mean_auc'] - std_metrics['overall']['mean_auc']
+        f1_improvement = tta_metrics['overall']['mean_f1'] - std_metrics['overall']['mean_f1']
+        print(f"\nTTA 提升:")
+        print(f"  AUC 提升: {auc_improvement:+.4f} ({auc_improvement*100:+.2f}%)")
+        print(f"  F1 提升:  {f1_improvement:+.4f} ({f1_improvement*100:+.2f}%)")
+        
+        all_results['tta'] = {
+            'mean_auc': tta_metrics['overall']['mean_auc'],
+            'mean_f1': tta_metrics['overall']['mean_f1'],
+            'auc_improvement': auc_improvement,
+            'f1_improvement': f1_improvement
+        }
+    
+    # 3. 不确定性分析
+    if args.uncertainty:
+        print("\n" + "=" * 60)
+        print("3. 不确定性分析 (MC Dropout)")
+        print("=" * 60)
+        
+        unc_result = uncertainty_analysis(
+            model, test_loader, device,
+            n_samples=config['robustness']['uncertainty']['n_samples']
+        )
+        
+        print(f"\n不确定性统计:")
+        print(f"  均值: {unc_result['mean']:.6f}")
+        print(f"  标准差: {unc_result['std']:.6f}")
+        print(f"  中位数: {unc_result['median']:.6f}")
+        
+        all_results['uncertainty'] = {
+            'method': 'MC Dropout',
+            'n_samples': config['robustness']['uncertainty']['n_samples'],
+            'mean': unc_result['mean'],
+            'std': unc_result['std'],
+            'median': unc_result['median']
+        }
+        
+        # 绘制不确定性分布
+        plot_uncertainty_distribution(
+            unc_result['values'],
+            uncertainty_type='Prediction Std',
+            save_path=str(figure_dir / 'uncertainty_distribution.png')
+        )
+    
+    # 4. 鲁棒性测试
+    if args.robustness:
+        print("\n" + "=" * 60)
+        print("4. 鲁棒性测试")
+        print("=" * 60)
+        
+        rob_results = robustness_test(model, test_loader, device)
+        
+        print("\n鲁棒性测试结果:")
+        for name, res in rob_results.items():
+            print(f"\n  {name}:")
+            print(f"    干净准确率: {res['accuracy_clean']:.4f}")
+            print(f"    对抗准确率: {res['accuracy_adversarial']:.4f}")
+            print(f"    准确率下降: {res['accuracy_drop']:.4f}")
+            print(f"    预测变化率: {res['prediction_change_rate']:.4f}")
+        
+        all_results['robustness'] = rob_results
+        
+        # 绘制鲁棒性对比图
+        plot_robustness_comparison(
+            rob_results,
+            save_path=str(figure_dir / 'robustness_comparison.png')
+        )
+    
+    # 保存结果
+    results_path = output_dir / 'evaluation_results.json'
+    
+    # 转换 numpy 类型为 Python 原生类型
+    def convert_to_serializable(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, dict):
+            return {k: convert_to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_serializable(item) for item in obj]
+        return obj
+    
+    all_results_serializable = convert_to_serializable(all_results)
+    
+    with open(results_path, 'w', encoding='utf-8') as f:
+        json.dump(all_results_serializable, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n评估结果已保存到: {results_path}")
+    print(f"可视化图表已保存到: {figure_dir}")
+
+
+if __name__ == '__main__':
+    main()
