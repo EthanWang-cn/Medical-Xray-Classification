@@ -1,74 +1,73 @@
 # -*- coding: utf-8 -*-
 """
-骨干网络实现
-支持 ResNet、DenseNet、EfficientNet 等多种经典架构
-基于 timm 库实现，支持预训练权重加载
+Backbone Network Implementations
+Supports ResNet, DenseNet, EfficientNet and other classic architectures
+Implemented using the timm library with pretrained weight support
 """
-
 import torch
 import torch.nn as nn
 import timm
 
 
 class BaseClassifier(nn.Module):
-    """分类器基类，封装通用的分类头结构"""
+    """Base classifier class, encapsulating common classification head structure"""
     
     def __init__(self, num_classes, in_features, dropout_rate=0.3):
         """
         Args:
-            num_classes: 分类类别数
-            in_features: 输入特征维度
-            dropout_rate: Dropout 比率，用于正则化和不确定性估计
+            num_classes: Number of classification classes
+            in_features: Input feature dimension
+            dropout_rate: Dropout rate for regularization and uncertainty estimation
         """
         super().__init__()
         self.num_classes = num_classes
         
-        # 分类头：全局平均池化 + Dropout + 全连接层
+        # Classification head: Global Average Pooling + Dropout + Fully Connected
         self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # 全局平均池化
-            nn.Flatten(),             # 展平
-            nn.Dropout(p=dropout_rate),  # Dropout 层（用于 MC Dropout 不确定性估计）
-            nn.Linear(in_features, num_classes)  # 分类全连接层
+            nn.AdaptiveAvgPool2d(1),  # Global Average Pooling
+            nn.Flatten(),             # Flatten
+            nn.Dropout(p=dropout_rate),  # Dropout layer (for MC Dropout uncertainty estimation)
+            nn.Linear(in_features, num_classes)  # Classification fully connected layer
         )
     
     def forward(self, x):
-        """前向传播"""
+        """Forward pass"""
         return self.classifier(x)
 
 
 class ResNetClassifier(nn.Module):
     """
-    ResNet 系列分类器
-    支持 resnet18, resnet34, resnet50, resnet101 等
+    ResNet Series Classifier
+    Supports resnet18, resnet34, resnet50, resnet101, etc.
     """
     
     def __init__(self, model_name='resnet50', num_classes=14, 
                  pretrained=True, dropout_rate=0.3, in_channels=3):
         """
         Args:
-            model_name: 模型名称，如 'resnet50', 'resnet18'
-            num_classes: 分类类别数
-            pretrained: 是否使用预训练权重
-            dropout_rate: Dropout 比率
-            in_channels: 输入通道数（医学影像可能是单通道）
+            model_name: Model name, e.g. 'resnet50', 'resnet18'
+            num_classes: Number of classification classes
+            pretrained: Whether to use pretrained weights
+            dropout_rate: Dropout rate
+            in_channels: Number of input channels (medical images may be single-channel)
         """
         super().__init__()
         
-        # 使用 timm 创建骨干网络
+        # Create backbone using timm
         self.backbone = timm.create_model(
             model_name,
             pretrained=pretrained,
-            num_classes=0,  # 不使用默认分类头
+            num_classes=0,  # Do not use default classification head
             in_chans=in_channels
         )
         
-        # 获取特征维度
+        # Get feature dimension
         if hasattr(self.backbone, 'num_features'):
             in_features = self.backbone.num_features
         else:
             in_features = self.backbone.fc.in_features
         
-        # 自定义分类头
+        # Custom classification head
         self.classifier = nn.Sequential(
             nn.Dropout(p=dropout_rate),
             nn.Linear(in_features, num_classes)
@@ -79,44 +78,44 @@ class ResNetClassifier(nn.Module):
     
     def forward(self, x):
         """
-        前向传播
+        Forward pass
         
         Args:
-            x: 输入图像张量 [B, C, H, W]
+            x: Input image tensor [B, C, H, W]
             
         Returns:
-            logits: 分类 logits [B, num_classes]
+            logits: Classification logits [B, num_classes]
         """
-        # 提取特征
+        # Extract features
         features = self.backbone(x)
-        # 分类
+        # Classify
         logits = self.classifier(features)
         return logits
     
     def forward_features(self, x):
-        """提取特征向量（用于可视化或迁移学习）"""
+        """Extract feature vectors (for visualization or transfer learning)"""
         return self.backbone(x)
 
 
 class DenseNetClassifier(nn.Module):
     """
-    DenseNet 系列分类器
-    医学影像领域经典架构，CheXNet 即基于 DenseNet121
+    DenseNet Series Classifier
+    Classic architecture in medical imaging, CheXNet is based on DenseNet121
     """
     
     def __init__(self, model_name='densenet121', num_classes=14,
                  pretrained=True, dropout_rate=0.3, in_channels=3):
         """
         Args:
-            model_name: 模型名称，如 'densenet121', 'densenet169'
-            num_classes: 分类类别数
-            pretrained: 是否使用预训练权重
-            dropout_rate: Dropout 比率
-            in_channels: 输入通道数
+            model_name: Model name, e.g. 'densenet121', 'densenet169'
+            num_classes: Number of classification classes
+            pretrained: Whether to use pretrained weights
+            dropout_rate: Dropout rate
+            in_channels: Number of input channels
         """
         super().__init__()
         
-        # 使用 timm 创建骨干网络
+        # Create backbone using timm
         self.backbone = timm.create_model(
             model_name,
             pretrained=pretrained,
@@ -124,10 +123,10 @@ class DenseNetClassifier(nn.Module):
             in_chans=in_channels
         )
         
-        # 获取特征维度
+        # Get feature dimension
         in_features = self.backbone.num_features
         
-        # 自定义分类头
+        # Custom classification head
         self.classifier = nn.Sequential(
             nn.Dropout(p=dropout_rate),
             nn.Linear(in_features, num_classes)
@@ -137,7 +136,7 @@ class DenseNetClassifier(nn.Module):
         self.dropout_rate = dropout_rate
     
     def forward(self, x):
-        """前向传播"""
+        """Forward pass"""
         features = self.backbone(x)
         logits = self.classifier(features)
         return logits
@@ -145,23 +144,23 @@ class DenseNetClassifier(nn.Module):
 
 class EfficientNetClassifier(nn.Module):
     """
-    EfficientNet 系列分类器
-    高效轻量，适合移动端部署
+    EfficientNet Series Classifier
+    Efficient and lightweight, suitable for mobile deployment
     """
     
     def __init__(self, model_name='efficientnet_b0', num_classes=14,
                  pretrained=True, dropout_rate=0.3, in_channels=3):
         """
         Args:
-            model_name: 模型名称，如 'efficientnet_b0', 'efficientnet_b3'
-            num_classes: 分类类别数
-            pretrained: 是否使用预训练权重
-            dropout_rate: Dropout 比率
-            in_channels: 输入通道数
+            model_name: Model name, e.g. 'efficientnet_b0', 'efficientnet_b3'
+            num_classes: Number of classification classes
+            pretrained: Whether to use pretrained weights
+            dropout_rate: Dropout rate
+            in_channels: Number of input channels
         """
         super().__init__()
         
-        # 使用 timm 创建骨干网络
+        # Create backbone using timm
         self.backbone = timm.create_model(
             model_name,
             pretrained=pretrained,
@@ -169,10 +168,10 @@ class EfficientNetClassifier(nn.Module):
             in_chans=in_channels
         )
         
-        # 获取特征维度
+        # Get feature dimension
         in_features = self.backbone.num_features
         
-        # 自定义分类头
+        # Custom classification head
         self.classifier = nn.Sequential(
             nn.Dropout(p=dropout_rate),
             nn.Linear(in_features, num_classes)
@@ -182,7 +181,7 @@ class EfficientNetClassifier(nn.Module):
         self.dropout_rate = dropout_rate
     
     def forward(self, x):
-        """前向传播"""
+        """Forward pass"""
         features = self.backbone(x)
         logits = self.classifier(features)
         return logits
@@ -191,20 +190,20 @@ class EfficientNetClassifier(nn.Module):
 def get_backbone(model_name='resnet50', num_classes=14, 
                  pretrained=True, dropout_rate=0.3, in_channels=3):
     """
-    工厂函数：根据模型名称创建对应的分类器
+    Factory function: Create corresponding classifier based on model name
     
     Args:
-        model_name: 模型名称
-        num_classes: 分类类别数
-        pretrained: 是否使用预训练权重
-        dropout_rate: Dropout 比率
-        in_channels: 输入通道数
+        model_name: Model name
+        num_classes: Number of classification classes
+        pretrained: Whether to use pretrained weights
+        dropout_rate: Dropout rate
+        in_channels: Number of input channels
         
     Returns:
-        model: 分类器模型
+        model: Classifier model
         
     Raises:
-        ValueError: 当模型名称不支持时抛出异常
+        ValueError: Throws exception when model name is not supported
     """
     model_name_lower = model_name.lower()
     
@@ -233,7 +232,7 @@ def get_backbone(model_name='resnet50', num_classes=14,
             in_channels=in_channels
         )
     else:
-        # 尝试用 timm 直接创建
+        # Try to create directly with timm
         try:
             model = timm.create_model(
                 model_name,
@@ -245,7 +244,7 @@ def get_backbone(model_name='resnet50', num_classes=14,
             return model
         except Exception as e:
             raise ValueError(
-                f"不支持的模型名称: {model_name}\n"
-                f"支持的模型系列: ResNet, DenseNet, EfficientNet\n"
-                f"或任意 timm 支持的模型名称"
+                f"Unsupported model name: {model_name}\n"
+                f"Supported model families: ResNet, DenseNet, EfficientNet\n"
+                f"Or any timm-supported model name"
             ) from e

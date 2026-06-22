@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-医学影像鲁棒性分类模型模块
+Medical Image Robust Classification Models Module
 """
-
 from .backbone import get_backbone, ResNetClassifier, DenseNetClassifier
 from .robust_module import RobustClassifier
 
