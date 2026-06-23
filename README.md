@@ -357,21 +357,7 @@ If you use this framework in your research, please consider citing the following
 
 ---
 
-## 🤝 Contributing
 
-Contributions are welcome! Feel free to:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
 ---
 
@@ -383,7 +369,7 @@ This project is for **research and educational purposes only**. It is NOT intend
 
 ## 📧 Contact
 
-For questions or collaborations, please open an issue on GitHub.
+ethan.link@foxmail.com
 
 ---
 
